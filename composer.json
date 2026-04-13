@@ -3,29 +3,52 @@
   "description": "Pre-migration validation tool for Laravel migrations",
   "type": "library",
   "license": "MIT",
-    "keywords": [
-        "table",
-        "migrations",
-        "preflight",
-	"tool",
-        "laravel"
-    ],
-    "authors": [
-        {
-            "name": "Samson Radje",
-            "email": "samody2006@gmail.com",
-            "role": "Developer"
-        }
-    ],
+
+  "keywords": [
+    "laravel",
+    "migrations",
+    "preflight",
+    "tool",
+    "database"
+  ],
+
+  "homepage": "https://github.com/samody/laravel-migration-preflight",
+
+  "support": {
+    "issues": "https://github.com/samody/laravel-migration-preflight/issues",
+    "source": "https://github.com/samody/laravel-migration-preflight"
+  },
+
+  "authors": [
+    {
+      "name": "Samson Radje",
+      "email": "samody2006@gmail.com",
+      "role": "Maintainer"
+    }
+  ],
+
   "require": {
     "php": ">=8.1",
     "illuminate/support": "^10.0|^11.0"
   },
+
+  "require-dev": {
+    "orchestra/testbench": "^8.0",
+    "phpunit/phpunit": "^10.0"
+  },
+
   "autoload": {
     "psr-4": {
       "MigrationPreflight\\": "src/"
     }
   },
+
+  "autoload-dev": {
+    "psr-4": {
+      "MigrationPreflight\\Tests\\": "tests/"
+    }
+  },
+
   "extra": {
     "laravel": {
       "providers": [
@@ -33,6 +56,7 @@
       ]
     }
   },
+
   "minimum-stability": "stable",
   "prefer-stable": true
 }
