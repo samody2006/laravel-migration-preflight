@@ -3,14 +3,19 @@
 namespace MigrationPreflight\Services;
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class MigrationScanner
 {
     public function getPendingMigrations(): array
     {
-        $ran = DB::table('migrations')->pluck('migration')->toArray();
+        if (!Schema::hasTable('migrations')) {
+            $ran = [];
+        } else {
+            $ran = DB::table('migrations')->pluck('migration')->toArray();
+        }
 
-        $files = glob(database_path('migrations/*.php'));
+        $files = glob(database_path('migrations/*.php')) ?: [];
 
         return collect($files)
             ->map(fn($file) => basename($file, '.php'))

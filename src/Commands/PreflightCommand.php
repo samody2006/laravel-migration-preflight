@@ -4,7 +4,7 @@ namespace MigrationPreflight\Commands;
 
 use Illuminate\Console\Command;
 use MigrationPreflight\Services\MigrationScanner;
-use MigrationPreflight\Services\ForeignKeyValidator;
+use MigrationPreflight\Services\MigrationValidator;
 
 class PreflightCommand extends Command
 {
@@ -13,7 +13,7 @@ class PreflightCommand extends Command
 
     public function handle(
         MigrationScanner $scanner,
-        ForeignKeyValidator $validator
+        MigrationValidator $validator
     ): int {
         $this->info("Running migration preflight...");
 

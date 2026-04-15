@@ -2,3 +2,5 @@
 /node_modules
 .phpunit.result.cache
 .env
+.idea
+composer.lock
