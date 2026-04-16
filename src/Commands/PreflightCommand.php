@@ -8,14 +8,15 @@ use MigrationPreflight\Services\MigrationValidator;
 
 class PreflightCommand extends Command
 {
-    protected $signature = 'migrate:preflight {--verbose : Show detailed error information with line numbers}';
+    protected $signature = 'migrate:preflight';
     protected $description = 'Run migration safety preflight checks';
 
     public function handle(
         MigrationScanner $scanner,
         MigrationValidator $validator
     ): int {
-        $verbose = $this->option('verbose');
+        // Use Laravel's built-in verbose option
+        $verbose = $this->getOutput()->isVerbose();
 
         $this->info("Running migration preflight...");
         if ($verbose) {
