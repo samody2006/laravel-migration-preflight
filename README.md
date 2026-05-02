@@ -37,7 +37,7 @@ php artisan migrate:preflight --verbose
 - ✅ **Smart Pluralization**: Correctly guesses referenced table names using Laravel's `Str::plural()`
 - ✅ **Zero-Migration Safety**: Handles fresh databases and empty migration folders without errors
 
-### Phase 1 Enhancements (NEW)
+### Phase 1 Enhancements
 - ✨ **Index Constraint Validation**: Detect indexes created on non-existent columns
 - ✨ **Unique Constraint Validation**: Validate unique constraints reference existing columns
 - ✨ **Full-Text Index Validation**: Check fullText() constraints before migration
@@ -45,6 +45,14 @@ php artisan migrate:preflight --verbose
 - ✨ **Line Number Tracking**: Know exactly where in your migration file the issue is
 - ✨ **Verbose Mode** (`--verbose`): See code context around each error
 - ✨ **Better Error Categorization**: Errors typed as `foreign_key`, `missing_table`, `index_constraint`, etc.
+
+### Phase 2 Refinement (NEW)
+- 🚀 **Block-Based Validation**: Scopes validation to individual `Schema` closures for high-precision checks
+- 🎯 **Up-Method Focus**: Focuses exclusively on the `up()` method to prevent false positives in `down()` methods
+- 🧱 **In-Block Creation Awareness**: Tracks columns created in the same block to avoid false errors in `after()`
+- 📦 **Multi-Column Support**: Validates array-based operations like `$table->dropColumn(['col1', 'col2'])`
+- 🏷️ **Closure Variable Agnosticism**: Detects and uses any closure variable name (e.g., `$table`, `$t`, `$blueprint`)
+- 🔍 **Robust Table Detection**: Advanced detection handles multi-line calls and complex formatting variations
 
 ## Usage
 
@@ -204,9 +212,10 @@ vendor/bin/phpunit tests/ --no-coverage
 ```
 
 **Test Coverage:**
-- 26 tests covering all validation scenarios
+- 30 tests covering all validation scenarios
 - Unit tests for constraint parsing
 - Feature tests for end-to-end validation
+- Reproduction tests for reported issues
 
 ## Limitations & Future Enhancements
 
