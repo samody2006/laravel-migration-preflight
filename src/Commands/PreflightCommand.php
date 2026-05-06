@@ -30,6 +30,9 @@ class PreflightCommand extends Command
             return 0;
         }
 
+        // Pre-scan all pending migrations to identify virtually created tables
+        $validator->preScan($migrations);
+
         $errors = [];
         $checked = 0;
 

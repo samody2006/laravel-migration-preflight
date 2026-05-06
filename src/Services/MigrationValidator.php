@@ -8,11 +8,107 @@ use Illuminate\Support\Str;
 
 class MigrationValidator
 {
+    /**
+     * Tables created during the current preflight run
+     */
+    protected array $virtualTables = [];
+
+    /**
+     * Columns created during the current preflight run
+     * Format: ['table_name' => ['col1', 'col2']]
+     */
+    protected array $virtualColumns = [];
+
     public function __construct(
         protected SchemaInspector $schema,
         protected ?ConstraintParser $constraintParser = null
     ) {
         $this->constraintParser = $this->constraintParser ?? new ConstraintParser();
+    }
+
+    /**
+     * Clear the virtual tables and columns state
+     */
+    public function clearVirtualState(): void
+    {
+        $this->virtualTables = [];
+        $this->virtualColumns = [];
+    }
+
+    /**
+     * Add a table to the virtual state
+     */
+    public function addVirtualTable(string $table): void
+    {
+        if (!in_array($table, $this->virtualTables)) {
+            $this->virtualTables[] = $table;
+        }
+        
+        if (!isset($this->virtualColumns[$table])) {
+            $this->virtualColumns[$table] = [];
+        }
+    }
+
+    /**
+     * Add a column to the virtual state
+     */
+    public function addVirtualColumn(string $table, string $column): void
+    {
+        if (!isset($this->virtualColumns[$table])) {
+            $this->virtualColumns[$table] = [];
+        }
+        
+        if (!in_array($column, $this->virtualColumns[$table])) {
+            $this->virtualColumns[$table][] = $column;
+        }
+    }
+
+    /**
+     * Check if a table exists (either in schema or virtually created)
+     */
+    protected function tableExists(string $table): bool
+    {
+        return in_array($table, $this->virtualTables) || $this->schema->tableExists($table);
+    }
+
+    /**
+     * Check if a column exists (either in schema or virtually created)
+     */
+    protected function columnExists(string $table, string $column): bool
+    {
+        // If the table is virtual and has the column, it exists
+        if (isset($this->virtualColumns[$table]) && in_array($column, $this->virtualColumns[$table])) {
+            return true;
+        }
+
+        // If the table exists in the real schema, check there
+        if ($this->schema->tableExists($table)) {
+            return $this->schema->columnExists($table, $column);
+        }
+
+        return false;
+    }
+
+    /**
+     * Pre-scan migrations to populate virtual tables
+     */
+    public function preScan(array $migrations): void
+    {
+        foreach ($migrations as $migration) {
+            $path = database_path("migrations/{$migration}.php");
+            if (!file_exists($path)) {
+                continue;
+            }
+
+            $content = file_get_contents($path);
+            
+            // Detect Schema::create calls for virtual tables
+            if (preg_match_all('/Schema\s*::\s*create\s*\(\s*["\'](.*?)["\']/', $content, $matches)) {
+                foreach ($matches[1] as $table) {
+                    $this->addVirtualTable($table);
+                }
+            }
+        }
     }
 
     public function validate(string $migration): array
@@ -46,6 +142,21 @@ class MigrationValidator
             }
         }
 
+        // First pass: register all tables and columns being created/modified in this migration
+        foreach ($blocks as $block) {
+            $table = $block['table'];
+            
+            if ($block['type'] === 'create') {
+                $this->addVirtualTable($table);
+            }
+            
+            // Track columns created in this block (for subsequent migrations or checks in same block)
+            $newColumns = $this->extractNewColumnsInBlock($block['content'], $block['varName']);
+            foreach ($newColumns as $column) {
+                $this->addVirtualColumn($table, $column);
+            }
+        }
+
         foreach ($blocks as $block) {
             $table = $block['table'];
             $type = $block['type'];
@@ -55,7 +166,7 @@ class MigrationValidator
 
             // If it's a 'table' modification, check if it exists
             if ($type === 'table' && config('preflight.checks.missing_tables', true)) {
-                if (!$this->schema->tableExists($table)) {
+                if (!$this->tableExists($table)) {
                     $errors[] = [
                         "message" => "Table '{$table}' does not exist",
                         "lineNumber" => $startLine,
@@ -64,7 +175,7 @@ class MigrationValidator
                 }
             }
 
-            // Get columns being created in THIS block
+            // Get columns being created in THIS block (for in-block creation awareness)
             $newColumns = $this->extractNewColumnsInBlock($blockContent, $varName);
 
             if (config('preflight.checks.missing_columns', true)) {
@@ -92,12 +203,12 @@ class MigrationValidator
      */
     protected function extractUpMethodContent(string $content): ?string
     {
-        if (preg_match('/public\s+function\s+up\s*\(\s*\)\s*:\s*void\s*\{(.*?)\}\s*(?:public|protected|private|abstract|\/\*\*)/s', $content, $matches)) {
+        if (preg_match('/public\s+function\s+up\s*\(\s*\)\s*:\s*void\s*\{(.*?)\}\s*(?:public|protected|private|abstract|\/\*\*|$)/s', $content, $matches)) {
             return $matches[1];
         }
         
         // Simpler fallback for different return type hints or no return type
-        if (preg_match('/public\s+function\s+up\s*\(\s*\)\s*\{(.*?)\}\s*(?:public|protected|private|abstract|\/\*\*)/s', $content, $matches)) {
+        if (preg_match('/public\s+function\s+up\s*\(\s*\)\s*\{(.*?)\}\s*(?:public|protected|private|abstract|\/\*\*|$)/s', $content, $matches)) {
             return $matches[1];
         }
 
@@ -128,7 +239,7 @@ class MigrationValidator
     /**
      * Extract individual Schema blocks from the migration content
      */
-    protected function extractSchemaBlocks(string $content): array
+    protected function extractSchemaBlocks(string $content, int $offsetLine = 1): array
     {
         $blocks = [];
         // More permissive pattern to find the start of a Schema closure
@@ -141,10 +252,11 @@ class MigrationValidator
                 $startPos = $match[1];
                 
                 // Find the variable name in the closure: function ($table) or function (Blueprint $table)
+                // Now also supports 'use ($var)' syntax
                 $afterFunctionPos = $startPos + strlen($match[0]);
                 $remainingContent = substr($content, $afterFunctionPos);
                 
-                if (preg_match('/^\s*(?:[\\\\a-zA-Z0-9_]+\s+)?\$(\w+)\s*\)\s*\{/', $remainingContent, $varMatch)) {
+                if (preg_match('/^\s*(?:[\\\\a-zA-Z0-9_]+\s+)?\$(\w+)\s*\)(?:\s*use\s*\([^)]*\))?\s*\{/', $remainingContent, $varMatch)) {
                     $varName = $varMatch[1];
                     $openingBracePos = $afterFunctionPos + strpos($remainingContent, '{');
                     
@@ -158,7 +270,7 @@ class MigrationValidator
                             'table' => $table,
                             'varName' => $varName,
                             'content' => $blockContent,
-                            'startLine' => $this->findLineNumberByContent($content, $startPos),
+                            'startLine' => $offsetLine + $this->findLineNumberByContent($content, $startPos),
                         ];
                     }
                 }
@@ -241,8 +353,8 @@ class MigrationValidator
         preg_match_all('/->\s*after\s*\(\s*["\'](.*?)["\']\s*\)/', $content, $afterMatches, PREG_OFFSET_CAPTURE);
         foreach ($afterMatches[1] as $column_match) {
             $column = $column_match[0];
-            if ($this->schema->tableExists($table) 
-                && !$this->schema->columnExists($table, $column)
+            if ($this->tableExists($table) 
+                && !$this->columnExists($table, $column)
                 && !in_array($column, $newColumns)
             ) {
                 $errors[] = [
@@ -272,7 +384,7 @@ class MigrationValidator
             }
 
             foreach ($columns as $column) {
-                if ($this->schema->tableExists($table) 
+                if ($this->tableExists($table) 
                     && !$this->schema->columnExists($table, $column)
                     && !in_array($column, $newColumns)
                 ) {
@@ -289,8 +401,8 @@ class MigrationValidator
         preg_match_all('/->\s*renameColumn\s*\(\s*["\'](.*?)["\']\s*,\s*["\'](.*?)["\']\s*\)/', $content, $renameMatches, PREG_OFFSET_CAPTURE);
         foreach ($renameMatches[1] as $idx => $column_match) {
             $column = $column_match[0];
-            if ($this->schema->tableExists($table) 
-                && !$this->schema->columnExists($table, $column)
+            if ($this->tableExists($table) 
+                && !$this->columnExists($table, $column)
                 && !in_array($column, $newColumns)
             ) {
                 $errors[] = [
@@ -310,7 +422,7 @@ class MigrationValidator
             preg_match_all('/\$' . $varName . '\s*->\s*[a-zA-Z0-9_]+\s*\(\s*["\'](\w+)["\']/', $beforeChange, $colMatches);
             if (!empty($colMatches[1])) {
                 $column = end($colMatches[1]);
-                if ($this->schema->tableExists($table) 
+                if ($this->tableExists($table) 
                     && !$this->schema->columnExists($table, $column)
                     && !in_array($column, $newColumns)
                 ) {
@@ -347,7 +459,7 @@ class MigrationValidator
                 $referencedTable = Str::plural(str_replace('_id', '', $column));
             }
 
-            if (!$this->schema->tableExists($referencedTable)) {
+            if (!$this->tableExists($referencedTable)) {
                 $errors[] = [
                     "message" => "Missing referenced table '{$referencedTable}' for '{$column}'",
                     "lineNumber" => $blockStartLine + substr_count(substr($content, 0, $column_match[1]), "\n"),
@@ -362,7 +474,7 @@ class MigrationValidator
         foreach ($foreignOnMatches[3] as $idx => $refTable_match) {
             $referencedTable = $refTable_match[0];
             $column = $foreignOnMatches[1][$idx][0];
-            if (!$this->schema->tableExists($referencedTable)) {
+            if (!$this->tableExists($referencedTable)) {
                 $errors[] = [
                     "message" => "Missing referenced table '{$referencedTable}' for '{$column}'",
                     "lineNumber" => $blockStartLine + substr_count(substr($content, 0, $refTable_match[1]), "\n"),
@@ -386,8 +498,8 @@ class MigrationValidator
         foreach ($constraints as $constraint) {
             if ($constraint['type'] === 'index' || $constraint['type'] === 'fullText' || $constraint['type'] === 'spatialIndex') {
                 foreach ($constraint['columns'] as $column) {
-                    if ($this->schema->tableExists($table) 
-                        && !$this->schema->columnExists($table, $column)
+                    if ($this->tableExists($table) 
+                        && !$this->columnExists($table, $column)
                         && !in_array($column, $newColumns)
                     ) {
                         $errors[] = [
@@ -407,8 +519,8 @@ class MigrationValidator
             $column = $column_match[0];
             $constraintType = $chainedMatches[2][$idx][0];
             
-            if ($this->schema->tableExists($table) 
-                && !$this->schema->columnExists($table, $column)
+            if ($this->tableExists($table) 
+                && !$this->columnExists($table, $column)
                 && !in_array($column, $newColumns)
             ) {
                 $errors[] = [
@@ -433,8 +545,8 @@ class MigrationValidator
         foreach ($constraints as $constraint) {
             if ($constraint['type'] === 'unique') {
                 foreach ($constraint['columns'] as $column) {
-                    if ($this->schema->tableExists($table) 
-                        && !$this->schema->columnExists($table, $column)
+                    if ($this->tableExists($table) 
+                        && !$this->columnExists($table, $column)
                         && !in_array($column, $newColumns)
                     ) {
                         $errors[] = [
