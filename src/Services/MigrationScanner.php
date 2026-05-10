@@ -15,11 +15,12 @@ class MigrationScanner
             $ran = DB::table('migrations')->pluck('migration')->toArray();
         }
 
+        $ignored = config('preflight.ignore.migrations', []);
         $files = glob(database_path('migrations/*.php')) ?: [];
 
         return collect($files)
             ->map(fn($file) => basename($file, '.php'))
-            ->reject(fn($name) => in_array($name, $ran))
+            ->reject(fn($name) => in_array($name, $ran) || in_array($name, $ignored) || in_array($name . '.php', $ignored))
             ->values()
             ->toArray();
     }

@@ -19,6 +19,18 @@ class MigrationValidator
      */
     protected array $virtualColumns = [];
 
+    /**
+     * Track table dependencies (foreign keys)
+     * Format: ['table_name' => ['referenced_table1', 'referenced_table2']]
+     */
+    protected array $dependencies = [];
+
+    /**
+     * Track indexes and unique constraints
+     * Format: ['table_name' => [['type' => 'unique', 'columns' => ['col1']], ...]]
+     */
+    protected array $indexes = [];
+
     public function __construct(
         protected SchemaInspector $schema,
         protected ?ConstraintParser $constraintParser = null
@@ -33,6 +45,8 @@ class MigrationValidator
     {
         $this->virtualTables = [];
         $this->virtualColumns = [];
+        $this->dependencies = [];
+        $this->indexes = [];
     }
 
     /**
@@ -157,8 +171,15 @@ class MigrationValidator
             }
         }
 
+        $ignoredTables = config('preflight.ignore.tables', []);
+
         foreach ($blocks as $block) {
             $table = $block['table'];
+
+            if (in_array($table, $ignoredTables)) {
+                continue;
+            }
+
             $type = $block['type'];
             $blockContent = $block['content'];
             $startLine = $block['startLine'];
@@ -465,6 +486,18 @@ class MigrationValidator
                     "lineNumber" => $blockStartLine + substr_count(substr($content, 0, $column_match[1]), "\n"),
                     "type" => "foreign_key",
                 ];
+            } else {
+                // Record dependency and check for circular reference
+                if (config('preflight.checks.circular_dependencies', true)) {
+                    if ($this->hasCircularDependency($table, $referencedTable)) {
+                        $errors[] = [
+                            "message" => "Circular dependency detected: '{$table}' -> '{$referencedTable}' -> ... -> '{$table}'",
+                            "lineNumber" => $blockStartLine + substr_count(substr($content, 0, $column_match[1]), "\n"),
+                            "type" => "circular_dependency",
+                        ];
+                    }
+                    $this->recordDependency($table, $referencedTable);
+                }
             }
         }
 
@@ -474,12 +507,25 @@ class MigrationValidator
         foreach ($foreignOnMatches[3] as $idx => $refTable_match) {
             $referencedTable = $refTable_match[0];
             $column = $foreignOnMatches[1][$idx][0];
+            
             if (!$this->tableExists($referencedTable)) {
                 $errors[] = [
                     "message" => "Missing referenced table '{$referencedTable}' for '{$column}'",
                     "lineNumber" => $blockStartLine + substr_count(substr($content, 0, $refTable_match[1]), "\n"),
                     "type" => "foreign_key",
                 ];
+            } else {
+                // Record dependency and check for circular reference
+                if (config('preflight.checks.circular_dependencies', true)) {
+                    if ($this->hasCircularDependency($table, $referencedTable)) {
+                        $errors[] = [
+                            "message" => "Circular dependency detected: '{$table}' -> '{$referencedTable}' -> ... -> '{$table}'",
+                            "lineNumber" => $blockStartLine + substr_count(substr($content, 0, $refTable_match[1]), "\n"),
+                            "type" => "circular_dependency",
+                        ];
+                    }
+                    $this->recordDependency($table, $referencedTable);
+                }
             }
         }
 
@@ -496,28 +542,41 @@ class MigrationValidator
         // Get explicit constraints like $table->index(['col1', 'col2'])
         $constraints = $this->constraintParser->parseIndexConstraints($content);
         foreach ($constraints as $constraint) {
-            if ($constraint['type'] === 'index' || $constraint['type'] === 'fullText' || $constraint['type'] === 'spatialIndex') {
+            $type = $constraint['type'];
+            if ($type === 'index' || $type === 'fullText' || $type === 'spatialIndex') {
                 foreach ($constraint['columns'] as $column) {
                     if ($this->tableExists($table) 
                         && !$this->columnExists($table, $column)
                         && !in_array($column, $newColumns)
                     ) {
                         $errors[] = [
-                            "message" => "Column '{$column}' does not exist on table '{$table}' (used in {$constraint['type']}())",
+                            "message" => "Column '{$column}' does not exist on table '{$table}' (used in {$type}())",
                             "lineNumber" => $blockStartLine + $constraint['lineNumber'] - 1,
                             "type" => "index_constraint",
                         ];
                     }
                 }
+
+                // Check for duplicate index
+                if (config('preflight.checks.duplicate_indexes', true)) {
+                    if ($this->hasDuplicateIndex($table, $type, $constraint['columns'])) {
+                        $errors[] = [
+                            "message" => "Duplicate {$type} detected on table '{$table}' for columns: " . implode(', ', $constraint['columns']),
+                            "lineNumber" => $blockStartLine + $constraint['lineNumber'] - 1,
+                            "type" => "duplicate_index",
+                        ];
+                    }
+                    $this->recordIndex($table, $type, $constraint['columns']);
+                }
             }
         }
 
         // Also detect chained ->index() calls on column definitions
-        preg_match_all('/\$' . $varName . '\s*->\s*[a-zA-Z0-9_]+\s*\(\s*["\'](\w+)["\'].*?\)->\s*(index|fullText|spatialIndex)\s*\(\s*\)/', $content, $chainedMatches, PREG_OFFSET_CAPTURE);
+        preg_match_all('/\$' . $varName . '\s*->\s*([a-zA-Z0-9_]+)\s*\(\s*["\'](\w+)["\'].*?\)->\s*(index|fullText|spatialIndex)\s*\(\s*\)/', $content, $chainedMatches, PREG_OFFSET_CAPTURE);
         
-        foreach ($chainedMatches[1] as $idx => $column_match) {
+        foreach ($chainedMatches[2] as $idx => $column_match) {
             $column = $column_match[0];
-            $constraintType = $chainedMatches[2][$idx][0];
+            $constraintType = $chainedMatches[3][$idx][0];
             
             if ($this->tableExists($table) 
                 && !$this->columnExists($table, $column)
@@ -528,6 +587,18 @@ class MigrationValidator
                     "lineNumber" => $blockStartLine + substr_count(substr($content, 0, $column_match[1]), "\n"),
                     "type" => "index_constraint",
                 ];
+            }
+
+            // Check for duplicate index
+            if (config('preflight.checks.duplicate_indexes', true)) {
+                if ($this->hasDuplicateIndex($table, $constraintType, [$column])) {
+                    $errors[] = [
+                        "message" => "Duplicate {$constraintType} detected on table '{$table}' for column: {$column}",
+                        "lineNumber" => $blockStartLine + substr_count(substr($content, 0, $column_match[1]), "\n"),
+                        "type" => "duplicate_index",
+                    ];
+                }
+                $this->recordIndex($table, $constraintType, [$column]);
             }
         }
 
@@ -556,6 +627,37 @@ class MigrationValidator
                         ];
                     }
                 }
+
+                // Check for duplicate unique constraint
+                if (config('preflight.checks.duplicate_indexes', true)) {
+                    if ($this->hasDuplicateIndex($table, 'unique', $constraint['columns'])) {
+                        $errors[] = [
+                            "message" => "Duplicate unique constraint detected on table '{$table}' for columns: " . implode(', ', $constraint['columns']),
+                            "lineNumber" => $blockStartLine + $constraint['lineNumber'] - 1,
+                            "type" => "duplicate_index",
+                        ];
+                    }
+                    $this->recordIndex($table, 'unique', $constraint['columns']);
+                }
+            }
+        }
+
+        // Also detect chained ->unique() calls on column definitions
+        preg_match_all('/\$' . $varName . '\s*->\s*([a-zA-Z0-9_]+)\s*\(\s*["\'](\w+)["\'].*?\)->\s*unique\s*\(\s*\)/', $content, $chainedMatches, PREG_OFFSET_CAPTURE);
+        
+        foreach ($chainedMatches[2] as $idx => $column_match) {
+            $column = $column_match[0];
+            
+            // Duplicate check
+            if (config('preflight.checks.duplicate_indexes', true)) {
+                if ($this->hasDuplicateIndex($table, 'unique', [$column])) {
+                    $errors[] = [
+                        "message" => "Duplicate unique constraint detected on table '{$table}' for column: {$column}",
+                        "lineNumber" => $blockStartLine + substr_count(substr($content, 0, $column_match[1]), "\n"),
+                        "type" => "duplicate_index",
+                    ];
+                }
+                $this->recordIndex($table, 'unique', [$column]);
             }
         }
 
@@ -582,5 +684,94 @@ class MigrationValidator
     protected function findLineNumberByContent(string $content, int $offset): int
     {
         return substr_count($content, "\n", 0, $offset) + 1;
+    }
+
+    /**
+     * Record a dependency between two tables
+     */
+    protected function recordDependency(string $table, string $referencedTable): void
+    {
+        if ($table === $referencedTable) {
+            return;
+        }
+
+        if (!isset($this->dependencies[$table])) {
+            $this->dependencies[$table] = [];
+        }
+
+        if (!in_array($referencedTable, $this->dependencies[$table])) {
+            $this->dependencies[$table][] = $referencedTable;
+        }
+    }
+
+    /**
+     * Check if adding a dependency creates a circular reference
+     */
+    protected function hasCircularDependency(string $table, string $referencedTable): bool
+    {
+        return $this->detectCycle($referencedTable, $table, []);
+    }
+
+    /**
+     * Depth-first search to detect cycles in dependency graph
+     */
+    protected function detectCycle(string $current, string $target, array $visited): bool
+    {
+        if ($current === $target) {
+            return true;
+        }
+
+        if (in_array($current, $visited)) {
+            return false;
+        }
+
+        $visited[] = $current;
+
+        if (isset($this->dependencies[$current])) {
+            foreach ($this->dependencies[$current] as $neighbor) {
+                if ($this->detectCycle($neighbor, $target, $visited)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Record an index for a table
+     */
+    protected function recordIndex(string $table, string $type, array $columns): void
+    {
+        if (!isset($this->indexes[$table])) {
+            $this->indexes[$table] = [];
+        }
+
+        sort($columns);
+
+        $this->indexes[$table][] = [
+            'type' => $type,
+            'columns' => $columns,
+        ];
+    }
+
+    /**
+     * Check if an index already exists for a table
+     */
+    protected function hasDuplicateIndex(string $table, string $type, array $columns): bool
+    {
+        if (!isset($this->indexes[$table])) {
+            return false;
+        }
+
+        sort($columns);
+
+        foreach ($this->indexes[$table] as $index) {
+            if ($index['type'] === $type && $index['columns'] === $columns) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

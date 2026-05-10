@@ -15,8 +15,13 @@ class PreflightCommand extends Command
         MigrationScanner $scanner,
         MigrationValidator $validator
     ): int {
-        // Use Laravel's built-in verbose option
-        $verbose = $this->getOutput()->isVerbose();
+        // Apply color configuration
+        if (!config('preflight.output.colors', true)) {
+            $this->output->setDecorated(false);
+        }
+
+        // Use Laravel's built-in verbose option OR config setting
+        $verbose = $this->getOutput()->isVerbose() || config('preflight.output.verbose', false);
 
         $this->info("Running migration preflight...");
         if ($verbose) {
@@ -30,8 +35,11 @@ class PreflightCommand extends Command
             return 0;
         }
 
-        // Pre-scan all pending migrations to identify virtually created tables
-        $validator->preScan($migrations);
+        // Pre-scan all pending migrations ONLY if migration order check is disabled.
+        // If enabled, we validate sequentially so order issues are detected.
+        if (!config('preflight.checks.migration_order', true)) {
+            $validator->preScan($migrations);
+        }
 
         $errors = [];
         $checked = 0;

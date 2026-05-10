@@ -88,6 +88,112 @@ return [
         */
 
         'unique_constraints' => true,
+
+        /*
+        |--------------------------------------------------------------------------
+        | Migration Order Validation
+        |--------------------------------------------------------------------------
+        |
+        | Detect migrations that may execute in an invalid dependency order.
+        |
+        */
+
+        'migration_order' => true,
+
+        /*
+        |--------------------------------------------------------------------------
+        | Circular Dependency Detection
+        |--------------------------------------------------------------------------
+        |
+        | Detect circular foreign key references between tables.
+        |
+        */
+
+        'circular_dependencies' => true,
+
+        /*
+        |--------------------------------------------------------------------------
+        | Duplicate Index Detection
+        |--------------------------------------------------------------------------
+        |
+        | Detect duplicate indexes and redundant constraints.
+        |
+        */
+
+        'duplicate_indexes' => true,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Output Configuration
+    |--------------------------------------------------------------------------
+    |
+    | Add output controls for console rendering and debugging visibility.
+    |
+    */
+
+    'output' => [
+
+        /*
+        |--------------------------------------------------------------------------
+        | Console Colors
+        |--------------------------------------------------------------------------
+        |
+        | Enable colored console output for warnings, errors, and success messages.
+        |
+        */
+
+        'colors' => true,
+
+        /*
+        |--------------------------------------------------------------------------
+        | Verbose Output
+        |--------------------------------------------------------------------------
+        |
+        | Display detailed diagnostic information during the preflight process.
+        |
+        */
+
+        'verbose' => false,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Ignore Configuration
+    |--------------------------------------------------------------------------
+    |
+    | Allow users to exclude specific migrations or tables from validation.
+    |
+    */
+
+    'ignore' => [
+
+        /*
+        |--------------------------------------------------------------------------
+        | Ignored Migrations
+        |--------------------------------------------------------------------------
+        |
+        | List migration class names or filenames that should be skipped during
+        | preflight validation.
+        |
+        */
+
+        'migrations' => [
+            // '2026_01_01_000000_create_legacy_table.php',
+        ],
+
+        /*
+        |--------------------------------------------------------------------------
+        | Ignored Tables
+        |--------------------------------------------------------------------------
+        |
+        | Tables excluded from relationship and structure validation checks.
+        |
+        */
+
+        'tables' => [
+            // 'legacy_logs',
+        ],
     ],
 
 ];
